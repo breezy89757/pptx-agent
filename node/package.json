@@ -1,0 +1,16 @@
+{
+  "name": "pptx-agent-translate",
+  "version": "0.1.0",
+  "private": true,
+  "description": "v1: Playwright geometry extraction + pptxgenjs native PPTX translation",
+  "type": "commonjs",
+  "scripts": {
+    "extract": "node extract.js",
+    "translate": "node translate.js",
+    "build": "node build.js"
+  },
+  "dependencies": {
+    "playwright": "^1.48.0",
+    "pptxgenjs": "^3.12.0"
+  }
+}

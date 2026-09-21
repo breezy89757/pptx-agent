@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<title>{{ deck_title }}</title>
+<style>
+  :root {
+    --primary: #{{ tokens.primary_color }};
+    --secondary: #{{ tokens.secondary_color }};
+    --accent: #{{ tokens.accent_color }};
+    --bg: #{{ tokens.background_color }};
+    --surface: #{{ tokens.surface_color }};
+    --text: #{{ tokens.text_color }};
+    --muted: #{{ tokens.muted_text_color }};
+    --font-heading: "{{ tokens.font_heading }}", sans-serif;
+    --font-body: "{{ tokens.font_body }}", sans-serif;
+    --space: {{ tokens.spacing_unit_px }}px;
+    --radius: {{ tokens.radius_px }}px;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: #1e1e1e;
+    font-family: var(--font-body);
+    color: var(--text);
+  }
+  .deck {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 32px;
+    padding: 32px 0 96px;
+  }
+  .slide {
+    position: relative;
+    width: {{ canvas_w }}px;
+    height: {{ canvas_h }}px;
+    background: var(--bg);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.35);
+    overflow: hidden;
+    flex: none;
+    scroll-snap-align: start;
+  }
+  .slide-index-badge {
+    position: absolute;
+    bottom: 8px;
+    right: 12px;
+    font-size: 11px;
+    color: rgba(0,0,0,0.25);
+    font-family: monospace;
+    z-index: 999;
+    pointer-events: none;
+  }
+  .toolbar {
+    position: fixed;
+    top: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(20,20,20,0.85);
+    color: #fff;
+    padding: 8px 16px;
+    border-radius: 999px;
+    font-family: system-ui, sans-serif;
+    font-size: 13px;
+    z-index: 1000;
+    display: flex;
+    gap: 12px;
+    align-items: center;
+  }
+</style>
+</head>
+<body>
+  <div class="toolbar">{{ deck_title }} · {{ slides|length }} 張投影片 · layout variants: {{ variants }}</div>
+  <div class="deck">
+    {% for slide in slides %}
+    <div class="slide" id="slide-{{ slide.index }}" data-layout-variant="{{ slide.layout_variant }}">
+      {{ slide.html | safe }}
+      <div class="slide-index-badge">#{{ slide.index }}</div>
+    </div>
+    {% endfor %}
+  </div>
+</body>
+</html>
