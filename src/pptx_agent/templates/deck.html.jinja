@@ -67,6 +67,12 @@
     gap: 12px;
     align-items: center;
   }
+  [data-chart] {
+    outline: 1.5px dashed rgba(128,128,128,0.7);
+    background: repeating-linear-gradient(45deg, rgba(128,128,128,0.06) 0 10px, transparent 10px 20px);
+    display: flex; align-items: center; justify-content: center;
+    font: 13px/1.4 system-ui, sans-serif; color: #888; text-align: center; padding: 8px;
+  }
 </style>
 </head>
 <body>
@@ -79,5 +85,15 @@
     </div>
     {% endfor %}
   </div>
+  <script>
+    // Preview only: label each native-chart placeholder. Extract ignores a
+    // placeholder's contents, so this never reaches the PPTX.
+    document.querySelectorAll('[data-chart]').forEach(function (el) {
+      try {
+        var c = JSON.parse(el.getAttribute('data-chart'));
+        el.textContent = c.type + ' chart \u00b7 ' + c.dataset + ' \u00b7 x=' + c.x + ' \u00b7 y=' + (c.y || []).join(', ');
+      } catch (e) { el.textContent = 'invalid data-chart'; }
+    });
+  </script>
 </body>
 </html>

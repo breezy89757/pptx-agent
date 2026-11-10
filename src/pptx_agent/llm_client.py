@@ -24,6 +24,8 @@ def complete_json(
     system_prompt: str,
     user_prompt: str,
     response_model: type[T],
+    web_search: bool = False,
+    web_search_images: bool = False,
 ) -> T:
     """Call the chat model and parse its response into `response_model`,
     using structured-output mode so every agent hands the next stage
@@ -33,12 +35,35 @@ def complete_json(
     default temperature (1), so we don't pass one."""
     settings = get_settings()
     client = get_client()
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    if web_search:
+        web_search_tool: dict[str, object] = {"type": "web_search", "search_context_size": "high"}
+        if web_search_images:
+            web_search_tool.update(
+                {
+                    "search_content_types": ["text", "image"],
+                    "image_settings": {"max_results": 3, "caption": True},
+                }
+            )
+        response = client.responses.parse(
+            model=settings.azure_openai_model,
+            input=messages,
+            tools=[web_search_tool],
+            tool_choice="auto",
+            **({"include": ["web_search_call.results"]} if web_search_images else {}),
+            text_format=response_model,
+        )
+        parsed = response.output_parsed
+        if parsed is None:
+            raise RuntimeError(f"Model refused or returned unparseable output: {response.output_text}")
+        return parsed
+
     completion = client.chat.completions.parse(
         model=settings.azure_openai_model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
+        messages=messages,
         response_format=response_model,
     )
     parsed = completion.choices[0].message.parsed

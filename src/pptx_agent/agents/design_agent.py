@@ -4,6 +4,7 @@ draws from the same palette/type/spacing instead of choosing its own."""
 from __future__ import annotations
 
 from pptx_agent.color_contrast import enforce_token_contrast
+from pptx_agent.design_system import LoadedDesignSystem
 from pptx_agent.fonts import DEFAULT_BODY_FONT, DEFAULT_HEADING_FONT, SAFE_FONTS, clamp_to_safe_font
 from pptx_agent.llm_client import complete_json
 from pptx_agent.models import Deck, DesignTokens
@@ -34,20 +35,34 @@ SYSTEM_PROMPT = f"""\
   深色系只適合特定情境(例如產品發表、夜間活動、遊戲/創意產業)。除非主題內容明確指向「科技感、未來感、夜間、
   極客」這類調性,否則預設應該考慮淺色或中性背景(例如近白、米色、淺灰)搭配深色文字,而不是自動選深色底。
   拿到題目後,先問自己「這份簡報的受眾與場合,實際上比較常見淺色還是深色簡報?」再決定。
+- 使用者提供的原始需求包含設計 brief,不可只根據簡報標題猜配色。使用者明確指定顏色、特定物件/場景的顏色、材質或要求參考素材時,使用 Web Search 查詢可靠色碼、素材與來源,不要憑記憶捏造色碼或素材 URL。
+- 若找到可用圖片素材,將其描述、直接圖片 URL、來源頁 URL 與來源名稱填入 reference_assets;只在素材與使用者要求相關時填入,不相關時留空陣列。不要把搜尋縮圖 URL 當成來源頁。
 """
 
 
-def run_design_agent(deck: Deck) -> DesignTokens:
+def run_design_agent(
+    deck: Deck,
+    *,
+    design_brief: str = "",
+    design_system: LoadedDesignSystem | None = None,
+) -> DesignTokens:
     slide_summary = "\n".join(f"- ({s.content_type.value}) {s.title}" for s in deck.slides)
     user_prompt = (
+        f"使用者原始需求與設計 brief:\n{design_brief}\n\n"
         f"簡報標題:{deck.deck_title}\n\n投影片內容概覽:\n{slide_summary}\n\n"
+        + (f"\n\n{design_system.prompt}" if design_system else "")
+        + "\n\n"
         "請為這份簡報設計一套設計令牌。"
     )
     tokens = complete_json(
         system_prompt=SYSTEM_PROMPT,
         user_prompt=user_prompt,
         response_model=DesignTokens,
+        web_search=True,
+        web_search_images=True,
     )
+    if design_system:
+        tokens = tokens.model_copy(update=design_system.token_overrides)
     tokens = tokens.model_copy(
         update={
             "font_heading": clamp_to_safe_font(tokens.font_heading, fallback=DEFAULT_HEADING_FONT),

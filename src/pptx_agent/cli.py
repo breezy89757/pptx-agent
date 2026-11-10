@@ -29,34 +29,39 @@ def _run_node(script: str, run_dir: Path) -> None:
         raise typer.Exit(result.returncode)
 
 
-def _run_qa_loop(run_dir: Path, qa_rounds: int) -> None:
+def _run_qa_loop(run_dir: Path, qa_rounds: int) -> bool | None:
     if qa_rounds <= 0:
-        return
+        return None
 
     try:
         from pptx_agent.pptx_render import render_pptx_to_pngs
     except ImportError:
         console.print("[yellow]略過視覺 QA:此環境沒有 pywin32(僅支援 Windows + PowerPoint)。[/yellow]")
-        return
+        return None
 
     deck = Deck.model_validate_json((run_dir / "content.json").read_text(encoding="utf-8"))
     tokens = DesignTokens.model_validate_json((run_dir / "design_tokens.json").read_text(encoding="utf-8"))
+    design_system_path = run_dir / "design_system_instructions.md"
+    design_instructions = design_system_path.read_text(encoding="utf-8") if design_system_path.exists() else None
     slide_by_index = {s.index: s for s in deck.slides}
     sorted_slides = sorted(deck.slides, key=lambda s: s.index)
 
-    for round_num in range(1, qa_rounds + 1):
-        console.print(f"[bold cyan]視覺 QA 第 {round_num}/{qa_rounds} 輪[/bold cyan] 渲染實際 PowerPoint 畫面並檢查...")
+    for round_num in range(1, qa_rounds + 2):
+        console.print(
+            f"[bold cyan]視覺 QA 驗證第 {round_num}/{qa_rounds + 1} 輪[/bold cyan] "
+            "渲染實際 PowerPoint 畫面並檢查..."
+        )
         try:
             pngs = render_pptx_to_pngs(run_dir / "deck.pptx", run_dir / f"qa_round_{round_num}")
         except Exception as exc:  # COM automation is inherently flaky
             console.print(f"[yellow]視覺 QA 渲染失敗,略過本輪:{exc}[/yellow]")
-            return
+            return None
 
         if len(pngs) != len(sorted_slides):
             console.print(
                 f"[yellow]警告:渲染出 {len(pngs)} 張圖片,但有 {len(sorted_slides)} 張投影片,略過本輪 QA。[/yellow]"
             )
-            return
+            return None
 
         flagged = []
         for png, slide in zip(pngs, sorted_slides):
@@ -69,14 +74,28 @@ def _run_qa_loop(run_dir: Path, qa_rounds: int) -> None:
 
         if not flagged:
             console.print("[bold green]視覺 QA 通過,沒有發現問題[/bold green]")
-            return
+            return True
 
-        console.print(f"[bold yellow]{len(flagged)} 張投影片有問題,重新產生版面中...[/bold yellow]")
+        if round_num > qa_rounds:
+            console.print(
+                f"[bold yellow]完成 {qa_rounds} 輪版面修正後仍有 {len(flagged)} 張投影片未通過視覺 QA。[/bold yellow]"
+            )
+            return False
+
+        console.print(
+            f"[bold yellow]{len(flagged)} 張投影片有問題,進行第 {round_num}/{qa_rounds} 輪版面修正...[/bold yellow]"
+        )
         slides_html_path = run_dir / "slides_html.json"
         slide_htmls_by_index = {s["index"]: s for s in json.loads(slides_html_path.read_text(encoding="utf-8"))}
         for verdict in flagged:
             slide = slide_by_index[verdict.index]
-            new_html = run_layout_agent(slide, tokens, extra_instructions=verdict.fix_instructions)
+            new_html = run_layout_agent(
+                slide,
+                tokens,
+                datasets=deck.datasets,
+                extra_instructions=verdict.fix_instructions,
+                design_instructions=design_instructions,
+            )
             slide_htmls_by_index[verdict.index] = new_html.model_dump()
         slides_html_path.write_text(
             json.dumps(list(slide_htmls_by_index.values()), ensure_ascii=False, indent=2), encoding="utf-8"
@@ -85,8 +104,7 @@ def _run_qa_loop(run_dir: Path, qa_rounds: int) -> None:
         render_deck_html(run_dir)
         _run_node("extract.js", run_dir)
         _run_node("translate.js", run_dir)
-    else:
-        console.print(f"[bold yellow]已達最大 QA 輪數({qa_rounds}),仍有未解決的問題,建議人工檢查。[/bold yellow]")
+    return False
 
 
 @app.command()
@@ -98,12 +116,15 @@ def generate(
         Path | None, typer.Option(help="包含大綱的文字檔路徑")
     ] = None,
     output_dir: Annotated[Path, typer.Option(help="輸出根目錄")] = Path("outputs"),
+    design_system: Annotated[
+        Path | None, typer.Option(help="選用設計系統資料夾(需含 README.md、tokens.json,可含 assets/)")
+    ] = None,
     slides: Annotated[int | None, typer.Option(help="期望的投影片數量(可略)")] = None,
     html_only: Annotated[
         bool, typer.Option(help="只做到 v0 網頁簡報,不轉成 .pptx")
     ] = False,
     qa_rounds: Annotated[
-        int, typer.Option(help="視覺 QA 迴圈輪數:實際渲染 .pptx、讓模型檢查、有問題就重做該頁。0 表示關閉")
+        int, typer.Option(help="視覺 QA 最大版面修正輪數;修正後會額外驗證一次。0 表示關閉")
     ] = 1,
     open_result: Annotated[
         bool, typer.Option(help="完成後自動開啟結果(.pptx 或 deck.html)")
@@ -116,7 +137,12 @@ def generate(
     text = outline_file.read_text(encoding="utf-8") if outline_file else outline
     assert text is not None
 
-    deck_path = run_pipeline(text, output_root=output_dir, target_slide_count=slides)
+    deck_path = run_pipeline(
+        text,
+        output_root=output_dir,
+        target_slide_count=slides,
+        design_system_path=design_system,
+    )
     run_dir = deck_path.parent
 
     if html_only:
@@ -130,7 +156,7 @@ def generate(
     console.print("[bold cyan]5/5 Translate[/bold cyan] pptxgenjs 轉成 .pptx...")
     _run_node("translate.js", run_dir)
 
-    _run_qa_loop(run_dir, qa_rounds)
+    qa_passed = _run_qa_loop(run_dir, qa_rounds)
 
     console.print("[bold cyan]驗證[/bold cyan] 檢查文字可編輯 + 每頁有非純文字元素...")
     ok, reports = validate_pptx(run_dir)
@@ -142,8 +168,10 @@ def generate(
             console.print(f"        - {p}")
 
     pptx_path = run_dir / "deck.pptx"
-    if ok:
+    if ok and qa_passed is not False:
         console.print(f"[bold green]完成,驗證通過[/bold green] -> {pptx_path}")
+    elif ok:
+        console.print(f"[bold yellow]結構驗證通過,但視覺 QA 未通過[/bold yellow] -> {pptx_path}")
     else:
         console.print(f"[bold yellow]完成,但驗證有警告[/bold yellow] -> {pptx_path}")
 

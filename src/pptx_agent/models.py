@@ -24,27 +24,15 @@ class DataPoint(BaseModel):
     unit: str | None = None
 
 
-class ChartType(str, Enum):
-    BAR = "bar"
-    LINE = "line"
-    PIE = "pie"
+class Dataset(BaseModel):
+    """A table of real data taken from the outline (never invented). Charts
+    reference it by id + column names, so the Layout Agent never retypes
+    numbers and the native chart's embedded workbook holds the true values."""
 
-
-class ChartSeries(BaseModel):
-    name: str
-    values: list[float]
-
-
-class ChartSpec(BaseModel):
-    """Only populated when the outline contains real, comparable numeric
-    data across categories -- never invented to fill space (same honesty
-    rule as data_points' "待填入" placeholders). When present, this becomes
-    a native PowerPoint chart (pptxgenjs addChart), not a hand-drawn one."""
-
-    chart_type: ChartType
-    categories: list[str]
-    series: list[ChartSeries]
-    value_label: str | None = Field(default=None, description="e.g. unit or axis label")
+    id: str = Field(description='short id such as "d1"')
+    title: str | None = None
+    columns: list[str] = Field(description="column names; usually the first is the category/x column")
+    rows: list[list[str | float]] = Field(description="one list per row, aligned with columns")
 
 
 class ComparisonSide(BaseModel):
@@ -72,7 +60,9 @@ class SlideContent(BaseModel):
     subtitle: str | None = None
     bullets: list[str] | None = None
     data_points: list[DataPoint] | None = None
-    chart: ChartSpec | None = None
+    dataset_ids: list[str] | None = Field(
+        default=None, description="ids of Deck.datasets that belong on this slide (for charts)"
+    )
     comparison: list[ComparisonSide] | None = None
     timeline: list[TimelineItem] | None = None
     quote: QuoteBlock | None = None
@@ -82,6 +72,14 @@ class SlideContent(BaseModel):
 class Deck(BaseModel):
     deck_title: str
     slides: list[SlideContent]
+    datasets: list[Dataset] = Field(default_factory=list)
+
+
+class DesignReferenceAsset(BaseModel):
+    description: str
+    asset_url: str
+    source_url: str
+    source_name: str
 
 
 class DesignTokens(BaseModel):
@@ -101,6 +99,10 @@ class DesignTokens(BaseModel):
     spacing_unit_px: int
     radius_px: int
     motif: str = Field(description="A short description of one recurring visual motif")
+    reference_assets: list[DesignReferenceAsset] = Field(
+        default_factory=list,
+        description="Image assets found with web search when the user's design brief asks for materials or visual references",
+    )
 
 
 class SlideHtml(BaseModel):

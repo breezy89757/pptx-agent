@@ -22,13 +22,22 @@ SYSTEM_PROMPT = """\
 - 只回傳結構化資料,不要輸出任何版面、HTML 或顏色相關的內容。
 - 用繁體中文撰寫內容,除非使用者的大綱本身是其他語言。
 
-關於 chart 欄位(只在 content_type=data 時可能用到):
-- 只有當大綱裡明確提供了「可比較的數列數據」時才填 chart——例如跨類別/跨時間的多筆數字(各部門營收、各季度成長、
-  各方案佔比)。chart_type 依資料性質選 bar(類別比較)、line(趨勢變化)或 pie(佔比,通常只有一個 series)。
-- 絕對不能為了填滿 chart 而編造數字。大綱沒給具體數字時,chart 留 null,量化重點改用 data_points 呈現
-  (value 可以寫「待填入」這類佔位字樣,如同目前的作法),不要自己掰數據去畫圖表。
-- chart 和 data_points 可以並存(例如 chart 放主要比較數列,data_points 放一兩個額外的總結指標),
-  也可以只用其中一個,依內容自然決定。
+即時資訊與新聞查證:
+- 涉及今日、最近幾天、最新、新聞或目前狀態時,必須先使用內建 Web Search 再寫內容。
+- 只能使用搜尋結果中的可查證資訊,不要用模型記憶補足即時事件,也不要捏造日期、數字或來源。
+- 每則新聞都要在同一則 bullet、comparison point、timeline description 或 data label/value 中寫出來源名稱與完整 URL。
+- 若搜尋後仍找不到可靠資料,明確寫「待確認」,不要把待確認內容寫成已發生事件。
+- 優先使用官方公告、政府機關、交易所、公司公告與具編採制度的新聞媒體。
+
+關於 datasets(整份簡報的 datasets 欄位)與 dataset_ids(每張投影片的欄位):
+- 只有當大綱裡明確提供了「可比較的數列數據」時才建立資料集——例如跨類別/跨時間的多筆數字(各部門營收、各季度
+  成長、各方案佔比、兩日指數比較)。每個資料集是一張小表:id(d1、d2…)、columns(欄位名稱)、rows(每列的值,
+  數值欄位必須是數字,不要帶單位或千分位字串;類別欄位是文字)。
+- 資料集裡的數字必須逐字取自大綱,絕對不能編造、估算或為了填滿圖表而補數字。大綱沒給具體數字時不要建立資料集,
+  量化重點改用 data_points 呈現(value 可以寫「待填入」這類佔位字樣)。
+- 把這張投影片會用到的資料集 id 放進該投影片的 dataset_ids(沒有就留 null)。同一個資料集可以被多張投影片引用。
+- 你只決定「有哪些資料」,不決定圖表類型或樣子——那是後續排版階段的工作。
+- datasets 和 data_points 可以並存(例如資料集放主要比較數列,data_points 放一兩個總結指標)。
 """
 
 
@@ -41,4 +50,5 @@ def run_content_agent(outline: str, *, target_slide_count: int | None = None) ->
         system_prompt=SYSTEM_PROMPT,
         user_prompt=user_prompt,
         response_model=Deck,
+      web_search=True,
     )

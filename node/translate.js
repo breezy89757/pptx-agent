@@ -10,18 +10,10 @@
 const fs = require("fs");
 const path = require("path");
 const pptxgen = require("pptxgenjs");
+const { addChartObject, ChartError } = require("./lib/charts");
 
 const CANVAS_W_IN = 1280 / 96;
 const CANVAS_H_IN = 720 / 96;
-// Extra width kept for text boxes: browser vs. PowerPoint font metrics differ
-// enough (esp. for CJK) that a tight box risks clipped/wrapped text (see spec's
-// "字型度量差異緩衝" note).
-const TEXT_WIDTH_SLACK = 1.12;
-
-function widenText(obj) {
-  const newW = Math.min(obj.w_in * TEXT_WIDTH_SLACK, CANVAS_W_IN - obj.x_in);
-  return { x: obj.x_in, w: Math.max(newW, obj.w_in) };
-}
 
 // pptxgenjs transparency is 0 (opaque) - 100 (fully transparent); CSS opacity is the inverse.
 function transparencyOf(obj) {
@@ -30,12 +22,11 @@ function transparencyOf(obj) {
 }
 
 function addTextObject(slide, obj) {
-  const { x, w } = widenText(obj);
   const transparency = transparencyOf(obj);
   slide.addText(obj.text_content || "", {
-    x,
+    x: obj.x_in,
     y: obj.y_in,
-    w,
+    w: obj.w_in,
     h: obj.h_in,
     fontFace: obj.font_family || "Arial",
     fontSize: obj.font_size_pt || 12,
@@ -78,40 +69,6 @@ function addImageObject(slide, runDir, obj) {
   });
 }
 
-const CHART_TYPE_MAP = { bar: "bar", line: "line", pie: "pie" };
-
-function addChartObject(slide, pptx, obj, chartSpec, tokens) {
-  if (!chartSpec || !chartSpec.series || chartSpec.series.length === 0) return;
-  const chartType = pptx.ChartType[CHART_TYPE_MAP[chartSpec.chart_type] || "bar"];
-  const chartColors = [tokens.primary_color, tokens.secondary_color, tokens.accent_color];
-
-  const chartData =
-    chartSpec.chart_type === "pie"
-      ? [{ name: chartSpec.value_label || chartSpec.series[0].name, labels: chartSpec.categories, values: chartSpec.series[0].values }]
-      : chartSpec.series.map((s) => ({ name: s.name, labels: chartSpec.categories, values: s.values }));
-
-  slide.addChart(chartType, chartData, {
-    x: obj.x_in,
-    y: obj.y_in,
-    w: obj.w_in,
-    h: obj.h_in,
-    chartColors,
-    showLegend: chartData.length > 1,
-    legendColor: tokens.muted_text_color,
-    legendFontFace: tokens.font_body,
-    catAxisLabelColor: tokens.muted_text_color,
-    catAxisLabelFontFace: tokens.font_body,
-    valAxisLabelColor: tokens.muted_text_color,
-    valAxisLabelFontFace: tokens.font_body,
-    dataLabelColor: tokens.text_color,
-    dataLabelFontFace: tokens.font_body,
-    showTitle: false,
-    catAxisLineColor: tokens.surface_color,
-    valAxisLineColor: tokens.surface_color,
-    showValue: chartSpec.chart_type !== "line",
-  });
-}
-
 async function main() {
   const runDir = process.argv[2];
   if (!runDir) {
@@ -132,10 +89,10 @@ async function main() {
   const tokens = JSON.parse(fs.readFileSync(tokensPath, "utf-8"));
   const content = fs.existsSync(contentPath) ? JSON.parse(fs.readFileSync(contentPath, "utf-8")) : null;
   const deckTitle = content ? content.deck_title : "Deck";
-  // slide_object_model.json is built from deck.html's slide order, which
-  // matches content.json's slides sorted by their own `index` -- pair them
-  // positionally so each chart placeholder finds its ChartSpec.
-  const contentSlidesInOrder = content ? [...content.slides].sort((a, b) => a.index - b.index) : [];
+  // Charts reference these by id (data-chart directive); rows are never
+  // retyped by the layout agent.
+  const datasets = content ? content.datasets || [] : [];
+  const chartErrors = [];
 
   const pptx = new pptxgen();
   pptx.defineLayout({ name: "PPTX_AGENT_WIDE", width: CANVAS_W_IN, height: CANVAS_H_IN });
@@ -145,15 +102,27 @@ async function main() {
   model.forEach((slideModel, i) => {
     const slide = pptx.addSlide();
     slide.background = { color: tokens.background_color };
-    const chartSpec = contentSlidesInOrder[i] ? contentSlidesInOrder[i].chart : null;
     const objects = [...slideModel.objects].sort((a, b) => a.z_index - b.z_index);
     for (const obj of objects) {
       if (obj.type === "text") addTextObject(slide, obj);
       else if (obj.type === "shape") addShapeObject(slide, pptx, obj);
       else if (obj.type === "image") addImageObject(slide, runDir, obj);
-      else if (obj.type === "chart") addChartObject(slide, pptx, obj, chartSpec, tokens);
+      else if (obj.type === "chart") {
+        try {
+          addChartObject(slide, pptx, obj, datasets, tokens);
+        } catch (err) {
+          if (!(err instanceof ChartError)) throw err;
+          chartErrors.push(`slide ${i}: ${err.message}`);
+        }
+      }
     }
   });
+
+  if (chartErrors.length) {
+    // fail loudly: a dropped chart should never ship silently
+    console.error("Chart build errors:\n  " + chartErrors.join("\n  "));
+    process.exit(2);
+  }
 
   const outPath = path.join(runDir, "deck.pptx");
   await pptx.writeFile({ fileName: outPath });
