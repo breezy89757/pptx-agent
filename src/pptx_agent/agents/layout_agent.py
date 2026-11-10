@@ -4,8 +4,13 @@ output here is not the final deliverable (v1 extracts it into a native PPTX)."""
 
 from __future__ import annotations
 
+import json
+
+from pptx_agent.charts import GRAMMAR_PROMPT, validate_chart_directives
 from pptx_agent.llm_client import complete_json
-from pptx_agent.models import DesignTokens, SlideContent, SlideHtml
+from pptx_agent.models import Dataset, DesignTokens, SlideContent, SlideHtml
+
+MAX_CHART_RETRIES = 2
 
 CANVAS_W = 1280
 CANVAS_H = 720
@@ -51,16 +56,11 @@ SYSTEM_PROMPT = f"""\
       opacity 會直接拉低文字與背景的對比,可能導致文字幾乎看不見。opacity < 1 只能用在純裝飾元素上
       (圓點、線條、色塊、圖示),絕對不能用在任何 <div>/<span>/<p>/<h1> 等承載可讀文字的元素本身。
       如果想要「文字看起來次要」的效果,改用 var(--muted) 顏色本身,而不是調低不透明度。
-11. 如果投影片內容的 JSON 裡 `chart` 欄位不是 null,代表這張投影片有真實數列數據,必須用「原生圖表版位」呈現,
-    不要自己用 div 畫長條/折線去模擬圖表。做法:
-    - 在合適的位置放一個空的 `<div data-chart-placeholder="true" style="position:absolute;left:..px;top:..px;
-      width:..px;height:..px;"></div>`,大小抓整張投影片的 40%-60% 面積,依版面配置留白排版(標題、輔助文字、
-      其他卡片可以放在圖表版位旁邊或上方)。
-    - 這個 placeholder div 裡面不要放任何子元素、文字或裝飾——它會在後續流程被替換成真正的 PowerPoint 圖表物件,
-      你放進去的任何東西都不會被保留。
-    - 一張投影片最多一個 chart placeholder(即使 chart.series 有多筆數列,也是同一個圖表、同一個版位)。
-    - 若 `chart` 是 null,則忽略這條規則,依原本方式用 data_points 卡片呈現數據。
-"""
+11. 如果這張投影片附有資料集(下方「本頁可用資料集」不是空的),代表有真實數據。要用圖表呈現時,必須使用
+    「原生圖表版位」,不要自己用 div 畫長條/折線去模擬;你可以依訊息自行決定圖表類型、數量與位置。
+    圖表版位大小視重要性而定:只有一張圖時抓整張投影片 40%-60% 面積,多張圖時各自縮小,其餘空間留給標題、
+    重點說明與卡片。是否用圖表由你判斷——只有 1-2 個數字時,用資料卡(大數字)可能比圖表更好。
+{GRAMMAR_PROMPT}"""
 
 
 def _content_type_hint(slide: SlideContent) -> str:
@@ -69,8 +69,9 @@ def _content_type_hint(slide: SlideContent) -> str:
         "bullets": "條列頁:避免單純 <ul><li>,改用卡片網格或帶編號色塊的清單,每個要點給一個視覺容器。",
         "comparison": "對比頁:左右兩欄,用不同底色或邊框色區分兩側,標題置頂。",
         "data": (
-            "數據頁:若 chart 欄位有值,依規則 11 留一個原生圖表版位,標題/data_points(如果有)排在旁邊或上方,"
-            "不要自己畫圖表模擬數列。若 chart 是 null,每個 data_point 做成一張數據卡(大數字 + 單位 + 標籤),用 grid 排列。"
+            "數據頁:若本頁有資料集,依規則 11 選最能傳達訊息的原生圖表(可多張),標題/data_points(如果有)排在旁邊或上方,"
+            "並用一段重點說明點出圖表想表達的結論;不要自己畫圖表模擬數列。沒有資料集時,每個 data_point 做成一張"
+            "數據卡(大數字 + 單位 + 標籤),用 grid 排列。"
         ),
         "timeline": (
             "時間軸頁:橫向或縱向時間軸,節點用圓點+連接線,每個節點旁放 label 與 description。"
@@ -83,25 +84,67 @@ def _content_type_hint(slide: SlideContent) -> str:
     return hints.get(slide.content_type.value, "")
 
 
-def run_layout_agent(slide: SlideContent, tokens: DesignTokens, *, extra_instructions: str | None = None) -> SlideHtml:
-    revision_note = (
-        f"\n\n這是重新設計(修正版):上一版實際渲染成 PowerPoint 後,視覺 QA 發現以下問題,這次務必避開,"
-        f"必要時可以整個換一種版面配置,不必修修補補:\n{extra_instructions}\n"
-        if extra_instructions
-        else ""
-    )
-    user_prompt = (
-        f"設計令牌(JSON):{tokens.model_dump_json()}\n\n"
-        f"這張投影片的內容類型:{slide.content_type.value}\n"
-        f"版面提示:{_content_type_hint(slide)}\n\n"
-        f"投影片結構化內容(JSON):{slide.model_dump_json()}"
-        f"{revision_note}\n\n"
-        "請畫出這張投影片的 HTML。"
-    )
-    result = complete_json(
-        system_prompt=SYSTEM_PROMPT,
-        user_prompt=user_prompt,
-        response_model=SlideHtml,
-    )
+def _slide_datasets(slide: SlideContent, datasets: list[Dataset] | None) -> list[Dataset]:
+    wanted = set(slide.dataset_ids or [])
+    return [d for d in (datasets or []) if d.id in wanted]
+
+
+def run_layout_agent(
+    slide: SlideContent,
+    tokens: DesignTokens,
+    *,
+    datasets: list[Dataset] | None = None,
+    extra_instructions: str | None = None,
+    design_instructions: str | None = None,
+) -> SlideHtml:
+    """Write one slide as HTML. Any `data-chart` directives are validated
+    against the slide's datasets; on failure the concrete errors are fed back
+    and the model retries (up to MAX_CHART_RETRIES), so a bad chart spec never
+    reaches the Node stages."""
+    slide_datasets = _slide_datasets(slide, datasets)
+    datasets_json = json.dumps([d.model_dump() for d in slide_datasets], ensure_ascii=False)
+
+    def build_prompt(note: str | None) -> str:
+        revision_note = (
+            f"\n\n這是重新設計(修正版):上一版實際渲染成 PowerPoint 後,視覺 QA 發現以下問題,這次務必避開,"
+            f"必要時可以整個換一種版面配置,不必修修補補:\n{note}\n"
+            if note
+            else ""
+        )
+        design_note = (
+            f"\n\n必須遵守的設計系統規範與可用素材:\n{design_instructions}"
+            if design_instructions
+            else ""
+        )
+        return (
+            f"設計令牌(JSON):{tokens.model_dump_json()}\n\n"
+            f"這張投影片的內容類型:{slide.content_type.value}\n"
+            f"版面提示:{_content_type_hint(slide)}\n\n"
+            f"投影片結構化內容(JSON):{slide.model_dump_json()}\n\n"
+            f"本頁可用資料集(JSON,圖表只能引用這些;沒有就代表本頁不能有 data-chart):{datasets_json}"
+            f"\n\n設計參考圖片(JSON):{json.dumps([asset.model_dump() for asset in tokens.reference_assets], ensure_ascii=False)}"
+            f"{design_note}"
+            f"{revision_note}\n\n"
+            "請畫出這張投影片的 HTML。"
+        )
+
+    note = extra_instructions
+    result: SlideHtml | None = None
+    for attempt in range(MAX_CHART_RETRIES + 1):
+        result = complete_json(
+            system_prompt=SYSTEM_PROMPT,
+            user_prompt=build_prompt(note),
+            response_model=SlideHtml,
+        )
+        errors = validate_chart_directives(result.html, slide_datasets)
+        if not errors:
+            break
+        note = (
+            (extra_instructions + "\n" if extra_instructions else "")
+            + "上一版的 data-chart 圖表規格有以下錯誤,請修正後重新輸出完整 HTML:\n"
+            + "\n".join(f"- {e}" for e in errors)
+        )
+    else:  # exhausted retries: fail loudly rather than ship a chart that will not build
+        raise RuntimeError(f"slide #{slide.index}: chart spec still invalid after retries:\n" + "\n".join(errors))
     result.index = slide.index
     return result

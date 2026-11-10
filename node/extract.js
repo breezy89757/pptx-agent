@@ -91,12 +91,19 @@ function extractSlide(slideEl) {
       return;
     }
 
-    if (el.hasAttribute("data-chart-placeholder")) {
-      // Reserved real estate for a native PowerPoint chart (translate.js
-      // pairs this geometry with the matching slide's ChartSpec from
-      // content.json). Nothing here is DOM content to extract -- the layout
-      // agent is told to leave this div empty.
+    if (el.hasAttribute("data-chart")) {
+      // Reserved real estate for a native PowerPoint chart. The layout agent
+      // declares the chart in the attribute (type / dataset / columns /
+      // options); translate.js resolves the real rows from content.json's
+      // datasets. Nothing inside the div is DOM content to extract.
       const r = toRect(rect);
+      let chartSpec = null;
+      let chartError = null;
+      try {
+        chartSpec = JSON.parse(el.getAttribute("data-chart"));
+      } catch (e) {
+        chartError = String(e.message || e);
+      }
       objects.push({
         type: "chart",
         ...r,
@@ -109,6 +116,8 @@ function extractSlide(slideEl) {
         align: null,
         z_index: zCounter++,
         is_editable: true,
+        chart_spec: chartSpec,
+        chart_error: chartError,
       });
       return; // don't recurse -- placeholder must be empty
     }

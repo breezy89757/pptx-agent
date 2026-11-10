@@ -51,6 +51,12 @@ def validate_pptx(run_dir: Path) -> tuple[bool, list[SlideReport]]:
             picture_count=len(picture_shapes),
             chart_count=len(chart_shapes),
         )
+        for cs in chart_shapes:
+            # a native chart must carry its embedded workbook, otherwise
+            # "Edit Data" in PowerPoint does nothing (chart not data-editable)
+            wb = getattr(cs.chart.part.chart_workbook, "xlsx_part", None)
+            if wb is None:
+                report.problems.append("chart has no embedded workbook (data is not editable)")
         if not text_shapes:
             report.problems.append("no editable text shapes found (deck may have collapsed to an image)")
         if not non_text_shapes:

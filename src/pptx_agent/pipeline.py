@@ -11,6 +11,7 @@ from rich.markup import escape
 from pptx_agent.agents.content_agent import run_content_agent
 from pptx_agent.agents.design_agent import run_design_agent
 from pptx_agent.agents.layout_agent import CANVAS_H, CANVAS_W, run_layout_agent
+from pptx_agent.design_system import LoadedDesignSystem, load_design_system
 from pptx_agent.models import Deck, DesignTokens, SlideHtml
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -53,10 +54,15 @@ def run_pipeline(
     output_root: Path,
     target_slide_count: int | None = None,
     run_name: str | None = None,
+    design_system_path: Path | None = None,
 ) -> Path:
     run_id = run_name or dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir = output_root / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
+    design_system: LoadedDesignSystem | None = None
+    if design_system_path:
+        design_system = load_design_system(design_system_path, run_dir)
+        (run_dir / "design_system_instructions.md").write_text(design_system.prompt, encoding="utf-8")
 
     console.print("[bold cyan]1/3 Content Agent[/bold cyan] 拆解大綱為投影片內容...")
     deck = run_content_agent(outline, target_slide_count=target_slide_count)
@@ -64,14 +70,19 @@ def run_pipeline(
     console.print(escape(f"  -> {len(deck.slides)} 張投影片: " + ", ".join(f"[{s.content_type.value}] {s.title}" for s in deck.slides)))
 
     console.print("[bold cyan]2/3 Design System Agent[/bold cyan] 產生設計令牌...")
-    tokens = run_design_agent(deck)
+    tokens = run_design_agent(deck, design_brief=outline, design_system=design_system)
     (run_dir / "design_tokens.json").write_text(tokens.model_dump_json(indent=2), encoding="utf-8")
     console.print(f"  -> theme={tokens.theme_name} primary=#{tokens.primary_color} font={tokens.font_heading}/{tokens.font_body}")
 
     console.print("[bold cyan]3/3 HTML Layout Agent[/bold cyan] 逐頁產生 HTML 版面...")
     slide_htmls: list[SlideHtml] = []
     for slide in deck.slides:
-        slide_html = run_layout_agent(slide, tokens)
+        slide_html = run_layout_agent(
+            slide,
+            tokens,
+            datasets=deck.datasets,
+            design_instructions=design_system.prompt if design_system else None,
+        )
         slide_htmls.append(slide_html)
         console.print(escape(f"  -> slide #{slide.index} [{slide.content_type.value}] variant={slide_html.layout_variant}"))
     slide_htmls.sort(key=lambda s: s.index)
